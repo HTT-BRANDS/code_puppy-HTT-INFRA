@@ -25,54 +25,74 @@ chmod +x scripts/setup-github-secrets.sh
 
 ---
 
-### 2. Validate Everything Works
+### 2. Trigger Workflow & Validate with Code Puppy
 
-Run these 4 commands in sequence:
-
+**Trigger the workflow:**
 ```bash
-# Verify secrets are set
-gh secret list --repo HTT-BRANDS/code_puppy-HTT-INFRA --env production
-
-# Trigger workflow manually
 gh workflow run cost-center-audit.yml --repo HTT-BRANDS/code_puppy-HTT-INFRA --ref main
+```
 
-# Monitor the run
+**Monitor:**
+```bash
 gh run list --repo HTT-BRANDS/code_puppy-HTT-INFRA --limit 3
-
-# View detailed logs
 RUN_ID=$(gh run list --repo HTT-BRANDS/code_puppy-HTT-INFRA --limit 1 --json databaseId -q '.[0].databaseId')
 gh run view $RUN_ID --log
 ```
 
 **Look for in logs:**
-- ✅ "Azure Login via OIDC" (should succeed, NO credentials!)
+- ✅ "Azure Login via OIDC" (succeeds with NO credentials!)
 - ✅ "Cost data collection" completed
 - ✅ No authentication errors
 - ✅ Artifact created
 
 ---
 
-### 3. Confirm Dashboard Updated
+### 3. Use Code Puppy Agents for Comprehensive Validation
 
-Visit your dashboard and verify:
-- Last updated = today's date
-- Costs displayed by service
-- No errors in browser console
+Launch Code Puppy to analyze and validate the cost data:
+
+```bash
+code-puppy -i
+```
+
+Then use these 7 Code Puppy prompts (detailed in [VALIDATION_WITH_CODE_PUPPY.md](docs/VALIDATION_WITH_CODE_PUPPY.md)):
+
+1. **Validate JSON Structure** - Analyze cost report format and data types
+2. **Verify API Integration** - Confirm all three Azure APIs returning data
+3. **Generate Validation Checklist** - Comprehensive pass/fail checklist
+4. **Inspect Dashboard Code** - Verify dashboard reads JSON correctly
+5. **Test Dashboard Logic** - Simulate rendering and data processing
+6. **Confirm Repo Isolation** - Verify NEW repo only, OLD repo untouched
+7. **Generate Final Report** - Create production readiness summary
+
+**Code Puppy will:**
+- ✅ Analyze cost data structure and quality
+- ✅ Validate all APIs (Cost Management, Graph, Resource Manager)
+- ✅ Test dashboard rendering logic
+- ✅ Confirm complete repo isolation
+- ✅ Generate comprehensive validation report
 
 ---
 
 ### 4. Monitor for 7 Days
 
-Each day, run:
+Each day, use Code Puppy to:
 ```bash
-gh run list --repo HTT-BRANDS/code_puppy-HTT-INFRA --limit 7
+code-puppy -i
 ```
 
-Watch for:
+**Prompt**: Download today's cost report and run validation checks:
+1. Data quality check (no nulls, correct formats)
+2. API consistency check (all services present)
+3. Dashboard rendering test
+4. Generate daily status
+
+**Watch for:**
 - Daily execution at 10:00 UTC ✓
 - All runs succeed ✓
 - No authentication failures ✓
 - Consistent cost data ✓
+- Dashboard updates correctly ✓
 
 ---
 
@@ -107,6 +127,7 @@ gh secret delete AZURE_CLIENT_ID --repo microsoft/cost-center --confirm 2>/dev/n
 |----------|---------|
 | [START_HERE.md](START_HERE.md) | Quick 3-step start |
 | [SETUP_EXECUTION.md](SETUP_EXECUTION.md) | Detailed 7-step guide |
+| [VALIDATION_WITH_CODE_PUPPY.md](docs/VALIDATION_WITH_CODE_PUPPY.md) | **🐶 NEW: Use Code Puppy agents for validation** |
 | [DECOMMISSION_OLD_REPO.md](docs/DECOMMISSION_OLD_REPO.md) | How to retire old repo |
 | [AUTHENTICATION_SETUP.md](docs/AUTHENTICATION_SETUP.md) | Complete auth reference |
 | [GITHUB_SECRETS_QUICK_REFERENCE.md](docs/GITHUB_SECRETS_QUICK_REFERENCE.md) | Quick ref card |
