@@ -1,153 +1,191 @@
 #!/bin/bash
 # GitHub Secrets Setup for Cost Center Dashboard
-# This script helps configure all required GitHub secrets for the cost-center-audit workflow
+# Uses Azure CLI with global admin credentials to automatically retrieve configuration
 # 
 # Prerequisites:
+# - Azure CLI (az) authenticated with global admin: az login
 # - GitHub CLI (gh) installed and authenticated: gh auth login
-# - Azure subscription with appropriate permissions
-# - Azure app registration created for OIDC authentication
+# - OIDC federated credential configured in Azure
 
 set -e
 
 REPO="HTT-BRANDS/code_puppy-HTT-INFRA"
-ENV="production"
+ENV="production (repository-level secrets)"
 
-echo "🔐 GitHub Secrets Configuration for Cost Center Dashboard"
+echo "🔐 GitHub Secrets Configuration - Using Azure CLI"
 echo "=================================================="
 echo "Repository: $REPO"
-echo "Environment: $ENV"
+echo "Scope: Repository-level secrets (accessible to all workflows)"
 echo ""
 
 # Function to set a secret
 set_secret() {
     local secret_name=$1
     local secret_value=$2
-    local env_flag=""
-    
-    if [ "$ENV" != "default" ]; then
-        env_flag="--env $ENV"
-    fi
     
     echo "Setting secret: $secret_name"
-    echo "$secret_value" | gh secret set "$secret_name" --repo "$REPO" $env_flag
+    echo "$secret_value" | gh secret set "$secret_name" --repo "$REPO"
     echo "✓ $secret_name set successfully"
-    echo ""
 }
 
-# Function to get secret (read-only)
-get_secret() {
-    local secret_name=$1
-    echo "Retrieving secret: $secret_name"
-    gh secret view "$secret_name" --repo "$REPO" 2>/dev/null || echo "NOT SET"
+# Function to validate command exists
+check_command() {
+    if ! command -v "$1" &> /dev/null; then
+        echo "❌ Error: $1 is not installed or not in PATH"
+        exit 1
+    fi
 }
 
-echo "📋 Step 1: Verify your Azure setup"
+# Validate prerequisites
+echo "📋 Step 1: Validate Prerequisites"
+echo "=================================="
+check_command "az"
+check_command "gh"
+check_command "jq"
+echo "✓ az CLI found"
+echo "✓ gh CLI found"
+echo "✓ jq found"
+echo ""
+
+# Verify Azure authentication
+echo "🔐 Step 2: Verify Azure Authentication"
 echo "======================================"
-echo "Please ensure you have:"
-echo "1. Azure app registration with OIDC federated credential"
-echo "2. Azure subscription ID"
-echo "3. Azure tenant ID"
-echo "4. Azure Storage Account (for blob storage)"
-echo "5. Azure Static Web Apps API token (optional, for dashboard deployment)"
+CURRENT_ACCOUNT=$(az account show --query 'name' -o tsv 2>/dev/null || echo "")
+if [ -z "$CURRENT_ACCOUNT" ]; then
+    echo "❌ Not authenticated to Azure. Run: az login"
+    exit 1
+fi
+echo "✓ Authenticated as: $CURRENT_ACCOUNT"
 echo ""
 
-read -p "Press Enter to continue..."
+# Get current subscription
+AZURE_SUBSCRIPTION_ID=$(az account show --query 'id' -o tsv)
+echo "✓ Current subscription: $AZURE_SUBSCRIPTION_ID"
 echo ""
 
-echo "🔑 Step 2: Collect Azure Credentials"
-echo "======================================"
-
-read -p "Enter AZURE_OIDC_CLIENT_ID (Application/Client ID): " AZURE_OIDC_CLIENT_ID
-read -p "Enter AZURE_TENANT_ID (Directory/Tenant ID): " AZURE_TENANT_ID
-read -p "Enter AZURE_SUBSCRIPTION_ID: " AZURE_SUBSCRIPTION_ID
-read -p "Enter AZURE_STATIC_WEB_APPS_API_TOKEN (or press Enter to skip): " AZURE_STATIC_WEB_APPS_API_TOKEN
-
-echo ""
-echo "📝 Step 3: Create Tenant Configuration"
-echo "======================================"
-echo "You need to create a tenants.json configuration file."
-echo "This file will be base64-encoded and stored as a GitHub secret."
-echo ""
-echo "Example tenants.json structure:"
-echo '{
-  "azureClientId": "'"$AZURE_OIDC_CLIENT_ID"'",
-  "tenants": [
-    {
-      "name": "Tenant 1",
-      "tenantId": "tenant-id-here",
-      "subscriptions": ["sub-1", "sub-2"],
-      "githubOrg": "HTT-BRANDS"
-    }
-  ]
-}'
+# Get current tenant
+AZURE_TENANT_ID=$(az account show --query 'tenantId' -o tsv)
+echo "✓ Current tenant: $AZURE_TENANT_ID"
 echo ""
 
-read -p "Enter path to your tenants.json file (or press Enter for interactive mode): " TENANTS_FILE
+# Retrieve OIDC Client ID
+echo "🔍 Step 3: Retrieve Azure App Registration Details"
+echo "==================================================="
+read -p "Enter the app registration name or client ID to use for OIDC: " APP_NAME_OR_ID
 
-if [ -z "$TENANTS_FILE" ]; then
-    echo "Interactive tenants.json creation:"
-    read -p "Tenant Name: " TENANT_NAME
-    read -p "Tenant ID: " TENANT_ID
-    read -p "Subscription IDs (comma-separated): " SUBSCRIPTIONS
-    
-    TENANTS_JSON=$(cat <<EOF
+# Try to find app registration
+APP_REG=$(az ad app list --query "[?displayName=='$APP_NAME_OR_ID' || appId=='$APP_NAME_OR_ID']" | jq '.[0]')
+
+if [ "$APP_REG" == "null" ]; then
+    echo "❌ App registration '$APP_NAME_OR_ID' not found"
+    exit 1
+fi
+
+AZURE_OIDC_CLIENT_ID=$(echo "$APP_REG" | jq -r '.appId')
+APP_DISPLAY_NAME=$(echo "$APP_REG" | jq -r '.displayName')
+echo "✓ Found app registration: $APP_DISPLAY_NAME"
+echo "✓ Client ID: $AZURE_OIDC_CLIENT_ID"
+echo ""
+
+# Verify OIDC federated credential exists
+echo "🔐 Step 4: Verify OIDC Federated Credential"
+echo "=========================================="
+APP_OBJECT_ID=$(echo "$APP_REG" | jq -r '.id')
+FEDERATED_CREDS=$(az ad app federated-credential list --id "$APP_OBJECT_ID" 2>/dev/null | jq '. | length')
+echo "✓ Found $FEDERATED_CREDS federated credentials"
+
+if [ "$FEDERATED_CREDS" -gt 0 ]; then
+    echo "  Federated credentials:"
+    az ad app federated-credential list --id "$APP_OBJECT_ID" | jq '.[] | {name: .name, issuer: .issuer, subject: .subject}' -C
+fi
+echo ""
+
+# List available subscriptions
+echo "📊 Step 5: List Available Subscriptions"
+echo "====================================="
+echo "Available subscriptions in current tenant:"
+az account list --query "[].{Name:name, ID:id}" -o table
+echo ""
+
+read -p "Use all subscriptions in current tenant? (y/n): " USE_ALL_SUBS
+
+if [ "$USE_ALL_SUBS" == "y" ]; then
+    SUBSCRIPTIONS=$(az account list --query "[].id" -o tsv | tr '\n' ',' | sed 's/,$//')
+else
+    read -p "Enter subscription IDs (comma-separated): " SUBSCRIPTIONS
+fi
+
+echo ""
+read -p "Enter tenant display name (for documentation): " TENANT_NAME
+
+# Create tenants configuration
+echo ""
+echo "📝 Step 6: Create Tenant Configuration"
+echo "====================================="
+
+# Convert subscription string to JSON array
+SUBS_JSON=$(echo "$SUBSCRIPTIONS" | tr ',' '\n' | sed 's/^/"/; s/$/"/' | jq -R -s 'split("\n")[:-1]')
+
+TENANTS_JSON=$(cat <<EOF
 {
   "azureClientId": "$AZURE_OIDC_CLIENT_ID",
   "tenants": [
     {
       "name": "$TENANT_NAME",
-      "tenantId": "$TENANT_ID",
-      "subscriptions": [$(echo "$SUBSCRIPTIONS" | sed 's/,/", "/g' | sed 's/^/"/; s/$/"]/')],
+      "tenantId": "$AZURE_TENANT_ID",
+      "subscriptions": $(echo "$SUBSCRIPTIONS" | tr ',' '\n' | jq -R . | jq -s .),
       "githubOrg": "HTT-BRANDS"
     }
   ]
 }
 EOF
-    )
-else
-    TENANTS_JSON=$(cat "$TENANTS_FILE")
-fi
+)
 
-# Base64 encode the tenants configuration
+echo "Generated configuration:"
+echo "$TENANTS_JSON" | jq . -C
+echo ""
+
+# Base64 encode
 TENANTS_CONFIG_B64=$(echo "$TENANTS_JSON" | base64)
 
+# Confirm before setting
+read -p "Set these secrets in GitHub production environment? (y/n): " CONFIRM
+
+if [ "$CONFIRM" != "y" ]; then
+    echo "❌ Aborted"
+    exit 0
+fi
+
 echo ""
-echo "🚀 Step 4: Set GitHub Secrets"
-echo "======================================"
+echo "🚀 Step 7: Set GitHub Secrets"
+echo "============================="
 
 # Set all secrets
 set_secret "AZURE_OIDC_CLIENT_ID" "$AZURE_OIDC_CLIENT_ID"
 set_secret "AZURE_TENANT_ID" "$AZURE_TENANT_ID"
 set_secret "AZURE_SUBSCRIPTION_ID" "$AZURE_SUBSCRIPTION_ID"
-
-if [ -n "$AZURE_STATIC_WEB_APPS_API_TOKEN" ]; then
-    set_secret "AZURE_STATIC_WEB_APPS_API_TOKEN" "$AZURE_STATIC_WEB_APPS_API_TOKEN"
-fi
-
 set_secret "TENANTS_CONFIG" "$TENANTS_CONFIG_B64"
 
 echo ""
-echo "✅ Step 5: Verify Secrets"
-echo "======================================"
-echo "Verifying secrets are set correctly..."
-echo ""
-
-get_secret "AZURE_OIDC_CLIENT_ID"
-get_secret "AZURE_TENANT_ID"
-get_secret "AZURE_SUBSCRIPTION_ID"
-get_secret "AZURE_STATIC_WEB_APPS_API_TOKEN"
-echo "TENANTS_CONFIG: (base64 encoded - use 'gh secret view TENANTS_CONFIG' to view)"
+echo "✅ Step 8: Verify Secrets"
+echo "========================="
+echo "GitHub secrets set in repository:"
+gh secret list --repo "$REPO"
 
 echo ""
 echo "✨ Setup Complete!"
-echo "======================================"
+echo "=================================================="
+echo ""
+echo "Summary:"
+echo "  ✓ Azure Client ID: $AZURE_OIDC_CLIENT_ID"
+echo "  ✓ Azure Tenant ID: $AZURE_TENANT_ID"
+echo "  ✓ Azure Subscription(s): $SUBSCRIPTIONS"
+echo "  ✓ Tenant Name: $TENANT_NAME"
+echo "  ✓ GitHub Secrets: 4 secrets set in repository"
 echo ""
 echo "Next steps:"
-echo "1. Verify Azure OIDC federated credential is configured"
-echo "2. Run workflow manually: gh workflow run cost-center-audit.yml"
-echo "3. Monitor logs: gh run list --repo $REPO"
-echo "4. Check cost-center-audit results in Actions tab"
+echo "1. Trigger workflow: gh workflow run cost-center-audit.yml --repo $REPO --ref main"
+echo "2. Monitor: gh run list --repo $REPO"
+echo "3. View logs: gh run view <RUN_ID> --log"
 echo ""
-echo "For more details, see:"
-echo "- Azure OIDC setup: https://learn.microsoft.com/en-us/azure/active-directory/workload-identities/"
-echo "- GitHub secrets: https://docs.github.com/en/actions/security-guides/encrypted-secrets"
+echo "For validation guide, see: docs/VALIDATION_WITH_CODE_PUPPY.md"
